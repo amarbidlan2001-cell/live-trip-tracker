@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Start Trip (Free)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+
+  <!-- Polyline Decoder -->
+  <script src="https://unpkg.com/@mapbox/polyline"></script>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <style>
+    body { margin: 0; font-family: Arial; }
+    #map { height: 60vh; width: 100%; }
+    h2, p { padding: 10px; }
+  </style>
+</head>
+<body>
+  <h2>🚌 Trip Sharing Page</h2>
+  <p>Your unique ID: <strong id="uidDisplay"></strong></p>
+
+  <label>
+    <input type="checkbox" id="simulate"> Simulate Delhi → Gurugram
+  </label>
+  <br><br>
+
+  <button onclick="startTrip()">Start Trip</button>
+  <button onclick="endTrip()">End Trip</button>
+  <p>Status: <span id="status">Not Started</span></p>
+
+  <div id="map"></div>
+
+  <script>
+    // ✅ Replace with your Firebase config
+    const firebaseConfig = {
+      apiKey: "YOUR_FIREBASE_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT_ID.firebaseio.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    const userId = 'user_' + Math.floor(Math.random() * 1000000);
+    document.getElementById('uidDisplay').innerText = userId;
+
+    let watchId = null;
+    let simulateInterval = null;
+    let routeCoords = [];
+    let routeIndex = 0;
+    let marker = null;
+    let polylineLayer = null;
+    let lastUpdate = 0;
+
+    const destination = { lat: 28.459497, lon: 77.026638 }; // Gurugram Bus Stand
+
+    // 🗺️ Setup Leaflet map
+    const map = L.map('map').setView([28.6139, 77.2090], 11); // Center: Delhi
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Simulated route: Delhi → Gurugram
+    const encodedPolyline = "}_fpAokwpMk@aBmB{AmDoD_BkC{CkEq@eAiAmBaAsAoDwEiBgCmCmDaAaAk@a@aAs@cAeAkA{Ai@u@q@q@Qe@Oc@Ie@Ca@";
+    const decodedSimRoute = window.polyline.decode(encodedPolyline);
+    const simRouteCoords = decodedSimRoute.map(([lat, lon]) => ({ lat, lon }));
+
+    function drawRoute(coords) {
+      if (polylineLayer) {
+        map.removeLayer(polylineLayer);
+      }
+      polylineLayer = L.polyline(coords, { color: 'blue' }).addTo(map);
+      map.fitBounds(polylineLayer.getBounds());
+    }
+
+    function updateMarker(lat, lon) {
+      if (!marker) {
+        marker = L.marker([lat, lon]).addTo(map);
+      } else {
+        marker.setLatLng([lat, lon]);
+      }
+    }
+
+    function startTrip() {
+      const useSimulated = document.getElementById("simulate").checked;
+      document.getElementById('status').innerText = useSimulated
+        ? "Simulated Trip Starting..."
+        : "Live Trip Started";
+
+      if (useSimulated) {
+        routeCoords = [...simRouteCoords]; // use hardcoded Delhi → Gurugram
+        drawRoute(routeCoords);
+
+        routeIndex = 0;
+        simulateInterval = setInterval(() => {
+          if (routeIndex >= routeCoords.length) {
+            clearInterval(simulateInterval);
+            simulateInterval = null;
+            db.ref('liveTrips/' + userId).set({ status: "ended" });
+            document.getElementById('status').innerText = "Trip Reached Gurugram Bus Stand";
+            return;
+          }
+
+          const { lat, lon } = routeCoords[routeIndex];
+          updateMarker(lat, lon);
+
+          db.ref('liveTrips/' + userId).set({
+            lat,
+            lon,
+            timestamp: Date.now(),
+            status: "started",
+            destination
+          });
+
+          routeIndex++;
+        }, 5000); // 🕐 Simulated update every 5 seconds
+
+      } else {
+        if (!navigator.geolocation) {
+          alert("Geolocation not supported.");
+          return;
+        }
+
+        watchId = navigator.geolocation.watchPosition((position) => {
+          const now = Date.now();
+          if (now - lastUpdate < 5000) return; // 🕐 Throttle to 5 seconds
+          lastUpdate = now;
+
+          const { latitude, longitude } = position.coords;
+
+          // 🧠 Draw route once using OSRM API
+          if (!polylineLayer) {
+            fetch(`https://router.project-osrm.org/route/v1/driving/${longitude},${latitude};${destination.lon},${destination.lat}?overview=full&geometries=polyline`)
+              .then(res => res.json())
+              .then(data => {
+                const route = window.polyline.decode(data.routes[0].geometry);
+                routeCoords = route.map(([lat, lon]) => ({ lat, lon }));
+                drawRoute(routeCoords);
+              })
+              .catch(err => {
+                console.error("Route fetch error:", err);
+              });
+          }
+
+          updateMarker(latitude, longitude);
+
+          db.ref('liveTrips/' + userId).set({
+            lat: latitude,
+            lon: longitude,
+            timestamp: now,
+            status: "started",
+            destination
+          });
+        }, (err) => {
+          alert("Error: " + err.message);
+        }, {
+          enableHighAccuracy: true,
+          maximumAge: 1000
+        });
+      }
+    }
+
+    function endTrip() {
+      if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+
+      if (simulateInterval) {
+        clearInterval(simulateInterval);
+        simulateInterval = null;
+      }
+
+      db.ref('liveTrips/' + userId).set({ status: "ended", lat: null, lon: null });
+      document.getElementById('status').innerText = "Trip Ended";
+    }
+  </script>
+</body>
+</html>

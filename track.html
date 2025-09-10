@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live Trip Tracker (OpenStreetMap with Route)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+
+  <style>
+    html, body { height: 100%; margin: 0; font-family: Arial, sans-serif; }
+    h2 { margin: 0; padding: 12px 16px; background:#f8f8f8; text-align: center; }
+    #map { height: calc(100vh - 100px); width: 100%; min-height: 320px; }
+    #shareBtn {
+      margin: 10px auto;
+      display: block;
+      background: #25D366;
+      color: white;
+      padding: 10px 20px;
+      font-size: 16px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+  </style>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+
+  <!-- Leaflet and Routing -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
+</head>
+<body>
+  <h2>🚌 Live Trip Tracker (OpenStreetMap with Driving Route)</h2>
+  <button id="shareBtn" onclick="shareLive()">📤 Share Live Location on WhatsApp</button>
+  <div id="map"></div>
+
+  <script>
+    // Firebase config
+    const firebaseConfig = {
+      apiKey: "YOUR_FIREBASE_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT_ID.firebaseio.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // Parse userId from URL
+    function getQueryParam(param) {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get(param);
+    }
+    const trackUserId = getQueryParam("userId");
+
+    // Map init
+    const map = L.map('map').setView([28.6139, 77.2090], 12);  // Default: Delhi
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Custom bus icon
+    const busIcon = L.icon({
+      iconUrl: 'https://cdn-icons-png.flaticon.com/512/61/61231.png',
+      iconSize: [40, 40],
+      iconAnchor: [20, 40],
+      popupAnchor: [0, -40]
+    });
+
+    const markers = {};
+    let routeControl = null;
+
+    // Functions to handle route
+    function showRoute(origin, destination) {
+      if (routeControl) {
+        map.removeControl(routeControl);
+      }
+      routeControl = L.Routing.control({
+        waypoints: [origin, destination],
+        routeWhileDragging: false,
+        draggableWaypoints: false,
+        addWaypoints: false,
+        showAlternatives: false,
+        createMarker: () => null,
+        lineOptions: {
+          styles: [{ color: '#007bff', weight: 5, opacity: 0.7 }]
+        }
+      }).addTo(map);
+    }
+
+    function clearRoute() {
+      if (routeControl) {
+        map.removeControl(routeControl);
+        routeControl = null;
+      }
+    }
+
+    function clearMarker(userId) {
+      if (markers[userId]) {
+        map.removeLayer(markers[userId]);
+        delete markers[userId];
+      }
+    }
+
+    // Listen for live trip updates
+    db.ref("liveTrips").on("value", (snapshot) => {
+      const data = snapshot.val();
+      if (!data) {
+        clearRoute();
+        return;
+      }
+
+      const keys = trackUserId ? [trackUserId] : Object.keys(data);
+
+      keys.forEach((userId) => {
+        const trip = data[userId];
+        if (!trip) {
+          clearRoute();
+          clearMarker(userId);
+          return;
+        }
+
+        const { lat, lon, status, destination } = trip;
+
+        if (status === "ended") {
+          clearRoute();
+          clearMarker(userId);
+          return;
+        }
+
+        if (!lat || !lon) {
+          clearMarker(userId);
+          return;
+        }
+        const pos = [lat, lon];
+
+        if (markers[userId]) {
+          markers[userId].setLatLng(pos);
+        } else {
+          markers[userId] = L.marker(pos, { icon: busIcon })
+            .addTo(map)
+            .bindPopup(`User: ${userId}`)
+            .openPopup();
+          map.setView(pos, 14);
+        }
+
+        // Show route only once when trip starts
+        if (!routeControl && status === "started") {
+          const origin = L.latLng(lat, lon);
+          const destinationPoint = destination
+            ? L.latLng(destination.lat, destination.lon)
+            : L.latLng(28.4595, 77.0266); // fallback Gurugram
+          showRoute(origin, destinationPoint);
+        }
+      });
+    });
+
+    // WhatsApp share button
+    function shareLive() {
+      let userId = trackUserId;
+      if (!userId) {
+        userId = prompt("Enter User ID to share:");
+        if (!userId) return;
+      }
+      const shareLink = `https://yourdomain.com/track.html?userId=${userId}`;
+      const message = `Track my live trip here: ${encodeURIComponent(shareLink)}`;
+      const whatsappURL = `https://wa.me/?text=${message}`;
+      window.open(whatsappURL, '_blank');
+    }
+  </script>
+</body>
+</html>

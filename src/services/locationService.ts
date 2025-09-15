@@ -1,9 +1,8 @@
 import axios from "axios";
 import type { Location } from "../types/location";
 
-// 🔥 Use your ngrok tunnel URL for backend
-const BASE_URL = 'http://localhost:8080/api/location';
-// const BASE_URL = "https://87077778f1a8.ngrok-free.app/api/location";
+// ✅ Local backend URL
+const BASE_URL = "http://localhost:8080/api/location";
 
 export const updateLocation = (busId: string, location: Location) =>
   axios.post(`${BASE_URL}/update`, { busId, ...location });

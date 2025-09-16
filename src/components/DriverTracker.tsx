@@ -1,78 +1,33 @@
-import React, { useEffect, useState } from "react";
-import { updateLocation } from "../services/locationService";
+import React, { useEffect, useState, useRef } from "react";
+import { updateLocation, deleteLocation } from "../services/locationService";
 
 interface DriverTrackerProps {
-  onNavigateToLiveTrack?: (busId: string) => void;
+  onGenerateLiveTrackLink?: (link: string) => void;
 }
 
-const DriverTracker: React.FC<DriverTrackerProps> = ({ onNavigateToLiveTrack }) => {
+const DriverTracker: React.FC<DriverTrackerProps> = ({ onGenerateLiveTrackLink }) => {
   const [busId, setBusId] = useState<string>("");
   const [tracking, setTracking] = useState(false);
   const [lastSent, setLastSent] = useState<string | null>(null);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showShareBox, setShowShareBox] = useState(false);
+
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | null = null;
-    let watchId: number | null = null;
-
-    if (tracking && busId) {
-      if ("geolocation" in navigator) {
-        // ✅ Track real GPS
-        watchId = navigator.geolocation.watchPosition(
-          (pos) => {
-            const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-            setLocation(loc);
-            setLastSent(new Date().toLocaleTimeString());
-            setError(null);
-
-            // 🔥 Send update via axios service
-            updateLocation(busId, loc).catch(() =>
-              setError("❌ Failed to send update to server")
-            );
-          },
-          () => {
-            setError("Permission denied → running in dummy mode");
-            // ✅ Fallback dummy updates
-            let lat = 28.6139,
-              lng = 77.2090;
-            interval = setInterval(() => {
-              lat += 0.0005;
-              lng += 0.0005;
-              const loc = { lat, lng };
-              setLocation(loc);
-              setLastSent(new Date().toLocaleTimeString());
-
-              updateLocation(busId, loc).catch(() =>
-                setError("❌ Failed to send update to server")
-              );
-            }, 5000);
-          },
-          { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-        );
-      } else {
-        setError("Geolocation not supported → running in dummy mode");
-        let lat = 28.6139,
-          lng = 77.2090;
-        interval = setInterval(() => {
-          lat += 0.0005;
-          lng += 0.0005;
-          const loc = { lat, lng };
-          setLocation(loc);
-          setLastSent(new Date().toLocaleTimeString());
-
-          updateLocation(busId, loc).catch(() =>
-            setError("❌ Failed to send update to server")
-          );
-        }, 5000);
-      }
-    }
-
     return () => {
-      if (interval) clearInterval(interval);
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [tracking, busId]);
+  }, []);
+
+  const startSendingLocation = (loc: { lat: number; lng: number }) => {
+    setLocation(loc);
+    updateLocation(busId, loc).catch(() =>
+      setError("❌ Failed to send update to server")
+    );
+    setLastSent(new Date().toLocaleTimeString());
+  };
 
   const handleStartTrip = () => {
     if (!busId) {
@@ -82,16 +37,57 @@ const DriverTracker: React.FC<DriverTrackerProps> = ({ onNavigateToLiveTrack }) 
 
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
-        () => setTracking(true),
-        () => {
-          setError("Permission denied. Switching to dummy mode.");
+        (pos) => {
+          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setError(null);
           setTracking(true);
+
+          // 🔥 First immediate call
+          startSendingLocation(loc);
+
+          // 🔥 Start interval every 5s
+          intervalRef.current = setInterval(() => {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                startSendingLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+              },
+              () => setError("⚠️ Failed to fetch location"),
+              { enableHighAccuracy: true, timeout: 10000 }
+            );
+          }, 5000);
+        },
+        () => {
+          setError("❌ Permission denied. Cannot start trip without location access.");
         }
       );
     } else {
-      setError("Geolocation not supported. Switching to dummy mode.");
-      setTracking(true);
+      setError("❌ Geolocation not supported in this browser.");
     }
+  };
+
+  const handleEndTrip = async () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    try {
+      await deleteLocation(busId);
+    } catch (err) {
+      console.error("❌ Failed to delete location:", err);
+    }
+
+    setTracking(false);
+    setShowShareBox(false);
+    setError(null);
+    setLastSent(null);
+    setLocation(null);
+  };
+
+  const handleShareClick = () => {
+    const link = `${window.location.origin}/live-track?busId=${busId}`;
+    onGenerateLiveTrackLink?.(link);
+    setShowShareBox(true);
   };
 
   return (
@@ -131,39 +127,55 @@ const DriverTracker: React.FC<DriverTrackerProps> = ({ onNavigateToLiveTrack }) 
             🚍 Start Trip
           </button>
           {error && <p style={{ color: "red" }}>⚠️ {error}</p>}
-
-          {/* Navigate to LiveTrack */}
-          <button
-            onClick={() => onNavigateToLiveTrack?.(busId)}
-            style={{
-              marginTop: "20px",
-              padding: "12px 24px",
-              fontSize: "18px",
-              backgroundColor: "#28a745",
-              color: "white",
-              border: "none",
-              borderRadius: "6px",
-              cursor: "pointer",
-            }}
-          >
-            📍 Share Live Location
-          </button>
         </div>
       ) : (
         <div>
           <h2>📡 Driver Tracker</h2>
           <p>
-            Sharing location every 5 seconds for Bus ID:{" "}
-            <strong>{busId}</strong>
+            Sharing location every 5 seconds for Bus ID: <strong>{busId}</strong>
           </p>
           {location && (
             <p>
-              🌍 Current Location: {location.lat.toFixed(5)},{" "}
-              {location.lng.toFixed(5)}
+              🌍 Current Location: {location.lat.toFixed(5)}, {location.lng.toFixed(5)}
             </p>
           )}
           {lastSent && <p>✅ Last update: {lastSent}</p>}
           {error && <p style={{ color: "red" }}>⚠️ {error}</p>}
+
+          <div style={{ marginTop: "20px", display: "flex", gap: "15px", justifyContent: "center" }}>
+            {!showShareBox && (
+              <button
+                onClick={handleShareClick}
+                style={{
+                  padding: "12px 24px",
+                  fontSize: "18px",
+                  backgroundColor: "#28a745",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                }}
+              >
+                📍 Share Live Location
+              </button>
+            )}
+
+            {/* 🔥 End Trip Button */}
+            <button
+              onClick={handleEndTrip}
+              style={{
+                padding: "12px 24px",
+                fontSize: "18px",
+                backgroundColor: "#dc3545",
+                color: "white",
+                border: "none",
+                borderRadius: "6px",
+                cursor: "pointer",
+              }}
+            >
+              🛑 End Trip
+            </button>
+          </div>
         </div>
       )}
     </div>
